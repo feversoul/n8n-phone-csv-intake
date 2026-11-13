@@ -1,0 +1,277 @@
+{
+  "name": "Phone CSV Intake · 0 Setup",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Phone CSV Intake · Setup\nRun this once: press **Execute workflow**. It creates two data tables: `game_log_rows` (one row per reading) and `game_log_files` (one row per upload). Running it again changes nothing.\n\nThe webhook does the same for scripted installs. You can delete it.",
+        "width": 560,
+        "height": 200,
+        "color": 4
+      },
+      "id": "7ce98f09-560f-46db-89d3-8fc64579766a",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -260
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a9b2ee0d-8172-45b9-8d61-068e9a85722f",
+      "name": "Run once",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "game-log/setup",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "fc6f25f6-a05b-4de0-80c2-aad29899487b",
+      "name": "Or call",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        180
+      ],
+      "webhookId": "721dbf1e-e646-47b2-8703-10c5d3ad7777",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "phoneCsvKey",
+          "name": "Game Log Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "game_log_rows",
+        "columns": {
+          "column": [
+            {
+              "name": "row_key",
+              "type": "string"
+            },
+            {
+              "name": "content_hash",
+              "type": "string"
+            },
+            {
+              "name": "token",
+              "type": "string"
+            },
+            {
+              "name": "file_hash",
+              "type": "string"
+            },
+            {
+              "name": "device",
+              "type": "string"
+            },
+            {
+              "name": "logged_at",
+              "type": "string"
+            },
+            {
+              "name": "session",
+              "type": "string"
+            },
+            {
+              "name": "battery",
+              "type": "number"
+            },
+            {
+              "name": "temperature",
+              "type": "number"
+            },
+            {
+              "name": "frame_drops",
+              "type": "number"
+            },
+            {
+              "name": "note",
+              "type": "string"
+            },
+            {
+              "name": "entry_id",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      },
+      "id": "7a125f78-bde1-4850-8011-c402aab7e47d",
+      "name": "Create rows table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "game_log_files",
+        "columns": {
+          "column": [
+            {
+              "name": "file_hash",
+              "type": "string"
+            },
+            {
+              "name": "token",
+              "type": "string"
+            },
+            {
+              "name": "status",
+              "type": "string"
+            },
+            {
+              "name": "device",
+              "type": "string"
+            },
+            {
+              "name": "filename",
+              "type": "string"
+            },
+            {
+              "name": "form",
+              "type": "string"
+            },
+            {
+              "name": "rows_in_file",
+              "type": "number"
+            },
+            {
+              "name": "rows_added",
+              "type": "number"
+            },
+            {
+              "name": "received_at",
+              "type": "date"
+            }
+          ]
+        },
+        "options": {
+          "createIfNotExists": true
+        }
+      },
+      "id": "ec832fda-f51d-4626-875a-cdf45eae4dfc",
+      "name": "Create files table",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        460,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ok: true } }];"
+      },
+      "id": "1e664f56-3d31-486a-8a3d-bed5028f3287",
+      "name": "Done",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "ecbf0326-490e-41ef-8132-bba304b79eec",
+      "name": "Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        900,
+        0
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Run once": {
+      "main": [
+        [
+          {
+            "node": "Create rows table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Or call": {
+      "main": [
+        [
+          {
+            "node": "Create rows table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create rows table": {
+      "main": [
+        [
+          {
+            "node": "Create files table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create files table": {
+      "main": [
+        [
+          {
+            "node": "Done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Done": {
+      "main": [
+        [
+          {
+            "node": "Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "phoneCsvSetup001"
+}

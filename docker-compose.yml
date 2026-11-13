@@ -1,0 +1,32 @@
+# n8n with the three workflows already imported, to try it locally.
+#   cp .env.example .env   (fill it in)   then   docker compose up -d
+# Already have n8n (your own server or Cloud)? You do not need this file: see
+# "Add it to your n8n" in the README.
+
+services:
+  n8n:
+    image: ${N8N_IMAGE:-n8nio/n8n:2.47.7}
+    restart: unless-stopped
+    entrypoint: ["sh", "/bootstrap/bootstrap.sh"]
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+      # The secret the phone sends in the header X-Log-Key.
+      GAME_LOG_KEY: ${GAME_LOG_KEY:?set GAME_LOG_KEY in .env}
+      # Optional: minutes without a reading that end a play session (default 30).
+      SESSION_GAP_MINUTES: ${SESSION_GAP_MINUTES:-}
+      # Optional: fill in all three to switch the Google Sheets nodes on with a
+      # service account (share the spreadsheet with that account's email).
+      GOOGLE_SHEET_ID: ${GOOGLE_SHEET_ID:-}
+      GOOGLE_SERVICE_ACCOUNT_EMAIL: ${GOOGLE_SERVICE_ACCOUNT_EMAIL:-}
+      GOOGLE_PRIVATE_KEY: ${GOOGLE_PRIVATE_KEY:-}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./workflows:/bootstrap/workflows:ro
+      - ./docker/bootstrap.sh:/bootstrap/bootstrap.sh:ro
+      - ./docker/prepare.mjs:/bootstrap/prepare.mjs:ro
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+
+volumes:
+  n8n_data:

@@ -1,0 +1,1547 @@
+{
+  "name": "Phone CSV Intake · 1 Intake",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Phone CSV Intake\nA shortcut on the phone posts the exported CSV to **Phone posts CSV**. The rows are checked, stored once, and the answer carries a comparison per phone. **Ask for comparison** (GET) returns the comparison alone.\n\nThe phone can send the CSV in three ways, all to the same address: as a **file upload** (form, any field name), as the **raw text** in the body, or as **JSON** `{ \"csv\": \"...\" }`. Add `?device=NAME` to the address so each phone says which one it is (not needed when the file has a device column).\n\n1. **Parse and check** finds the separator (comma, semicolon, tab), reads quoted notes with commas and line breaks, reads `38,5` as 38.5, and maps the columns by their header in any order. A file that still has one column is refused with an answer that says so. Nothing is written.\n2. **The same file twice**: the hash of the text is looked up in `game_log_files`. A file that was fully imported before (for the same `?device=`) stops here.\n3. **The same reading twice** (overlapping exports, two copies at the same moment): every row is inserted with a key, then the row with the lowest id per key stays and the others are removed. See the note on the right.\n4. **Google Sheet**: the two Google Sheets nodes are switched off until you set them up. See the note below them.\n5. **Compare devices** is worked out again from all stored rows.\n\nStart with **Settings**.",
+        "width": 860,
+        "height": 460,
+        "color": 4
+      },
+      "id": "5c6e174e-c54e-4dd3-8c0d-2cd04c426bec",
+      "name": "About",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        -700
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "game-log/intake",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "123e642a-7f41-4af1-8983-3baffa4c8e69",
+      "name": "Phone posts CSV",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "8ddff647-5ac0-4edb-8f72-cc35ea207f37",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "phoneCsvKey",
+          "name": "Game Log Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "game-log/comparison",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "6a25b0af-7701-4bf1-8b7c-9a999c64fb7f",
+      "name": "Ask for comparison",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        200
+      ],
+      "webhookId": "66276c97-8a3b-4191-8721-e47d781a0494",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "phoneCsvKey",
+          "name": "Game Log Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Change these, then save. The other nodes of this workflow read them from here.\nconst SESSION_GAP_MINUTES = 30; // on one phone, a pause longer than this starts a new play session\nconst DAY_FIRST = true; // 03/04/2026 means 3 April. Set to false if your app writes month/day/year\nconst TEMP_MIN = -20; // a temperature outside this range is refused as a typing mistake\nconst TEMP_MAX = 100;\nconst MAX_ROWS = 2000; // a file with more rows than this is refused\n// Used only for a file without a header row: what the columns mean, by how many there are.\nconst COLUMNS_WITHOUT_HEADER = {\n  4: ['battery', 'temperature', 'frame_drops', 'note'],\n  5: ['time', 'battery', 'temperature', 'frame_drops', 'note'],\n  6: ['time', 'device', 'battery', 'temperature', 'frame_drops', 'note'],\n};\n\nconst upload = $input.first();\nreturn [\n  {\n    json: {\n      session_gap_minutes: SESSION_GAP_MINUTES,\n      day_first: DAY_FIRST,\n      temp_min: TEMP_MIN,\n      temp_max: TEMP_MAX,\n      max_rows: MAX_ROWS,\n      columns_without_header: COLUMNS_WITHOUT_HEADER,\n      // One name per run: rows and the file record carry it, so a run can tell its own rows from another run's.\n      token: `${$execution.id}-${Math.random().toString(36).slice(2, 10)}`,\n      request: upload.json,\n    },\n    binary: upload.binary, // an uploaded file travels on to \"Read the upload\"\n  },\n];"
+      },
+      "id": "7890a8f5-8056-4989-815b-6c6bf91bf083",
+      "name": "Settings",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b099dfd9-99ca-4396-8f37-41285662f76e",
+              "leftValue": "={{ $('Phone posts CSV').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "043d78ce-cdae-46d8-85ad-e87594bfdb1c",
+      "name": "An upload?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        460,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Finds the CSV text in the request, whichever way the phone sent it:\n//   1. a file upload (multipart form, any field name)\n//   2. the raw text as the body (Content-Type text/csv, text/plain or none)\n//   3. JSON or a form with the text in \"csv\" (also \"text\", \"content\", \"data\", \"file\")\n// The phone can say which device it is with ?device=NAME in the address, a\n// \"device\" field next to the file, or the header X-Device.\n\nconst item = $input.first();\nconst { request } = item.json;\nconst body = request.body;\nconst fields = body && typeof body === 'object' && !Array.isArray(body) ? body : {};\n\nlet bytes = null;\nlet form = 'none';\nlet filename = '';\n\nconst files = Object.keys(item.binary ?? {});\nif (files.length > 0) {\n  const file = item.binary[files[0]];\n  bytes = await this.helpers.getBinaryDataBuffer(0, files[0]);\n  // n8n stores a raw body as a file too; only a multipart upload has fields or a real file name.\n  form = String(request.headers['content-type'] ?? '').startsWith('multipart/') ? 'file upload' : 'raw body';\n  filename = form === 'file upload' ? String(file.fileName ?? '') : '';\n} else if (typeof body === 'string') {\n  bytes = Buffer.from(body, 'utf8');\n  form = 'raw body';\n} else {\n  const key = ['csv', 'text', 'content', 'data', 'file'].find((name) => typeof fields[name] === 'string' && fields[name].trim() !== '');\n  if (key) {\n    bytes = Buffer.from(fields[key], 'utf8');\n    form = 'text field';\n  }\n}\n\n// Bytes to text. A byte order mark at the start says which encoding it is and is not part of the first column name.\nlet text = '';\nif (bytes) {\n  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) text = new TextDecoder('utf-16le').decode(bytes.subarray(2));\n  else if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) text = new TextDecoder('utf-16be').decode(bytes.subarray(2));\n  else text = bytes.toString('utf8');\n  text = text.replace(/^﻿/, '');\n}\n\nconst pick = (value) => (typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '');\nreturn [\n  {\n    json: {\n      form,\n      text,\n      filename: filename || pick(fields.filename) || pick(request.query?.filename),\n      device: pick(request.query?.device) || pick(fields.device) || pick(request.headers['x-device']),\n    },\n  },\n];"
+      },
+      "id": "26247ace-2a52-4b5e-8afd-f757832204b5",
+      "name": "Read the upload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        680,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Turns the uploaded text into checked rows, or into a clear answer for the\n// phone when the file cannot be used. Nothing is written here.\n\n// SHA-256 written out in plain JavaScript, because the Code node has no\n// `crypto` and no `require`. Takes a string, hashes its UTF-8 bytes, returns\n// 64 hex characters: the same value `sha256sum` prints for that text.\nconst K = [];\nfor (let n = 2, found = 0; found < 64; n++) {\n  let prime = true;\n  for (let d = 2; d * d <= n; d++) if (n % d === 0) prime = false;\n  if (prime) K[found++] = Math.floor((Math.cbrt(n) % 1) * 4294967296);\n}\nfunction sha256(text) {\n  const bytes = Buffer.from(String(text), 'utf8');\n  const length = bytes.length;\n  const padded = new Uint8Array((((length + 8) >> 6) + 1) << 6);\n  padded.set(bytes);\n  padded[length] = 0x80;\n  const view = new DataView(padded.buffer);\n  view.setUint32(padded.length - 8, Math.floor(length / 536870912));\n  view.setUint32(padded.length - 4, (length << 3) >>> 0);\n  const h = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];\n  const w = new Uint32Array(64);\n  const rotr = (x, n) => (x >>> n) | (x << (32 - n));\n  for (let offset = 0; offset < padded.length; offset += 64) {\n    for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset + i * 4);\n    for (let i = 16; i < 64; i++) {\n      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);\n      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);\n      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;\n    }\n    let [a, b, c, d, e, f, g, hh] = h;\n    for (let i = 0; i < 64; i++) {\n      const t1 = (hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + w[i]) >>> 0;\n      const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;\n      hh = g;\n      g = f;\n      f = e;\n      e = (d + t1) >>> 0;\n      d = c;\n      c = b;\n      b = a;\n      a = (t1 + t2) >>> 0;\n    }\n    [a, b, c, d, e, f, g, hh].forEach((value, i) => {\n      h[i] = (h[i] + value) >>> 0;\n    });\n  }\n  return h.map((value) => value.toString(16).padStart(8, '0')).join('');\n}\n\nconst settings = $('Settings').first().json;\nconst upload = $input.first().json;\n\nconst refuse = (code, error, message, extra = {}) => [{ json: { ok: false, code, error, message, form: upload.form, ...extra } }];\n\nif (upload.form === 'none' || upload.text.trim() === '') {\n  return refuse(\n    400,\n    'no_csv',\n    'No CSV text arrived. Send the file as a form upload, or its text as the request body with Content-Type: text/csv, or JSON like {\"csv\": \"...\"}.',\n  );\n}\n\n// Same text, same hash: line endings and a missing last line break do not make a file \"new\".\nconst text = upload.text.replace(/\\r\\n?/g, '\\n').replace(/\\s+$/, '');\nconst file_hash = sha256(text);\n\n// --- split into records ------------------------------------------------------\n// A field that starts with \" runs to the closing \", and may hold the separator,\n// line breaks and \"\" for a quote. Returns the records with the line each starts on.\nfunction split(source, separator) {\n  const records = [];\n  let fields = [];\n  let field = '';\n  let quoted = false;\n  let fieldStart = true;\n  let line = 1;\n  let startLine = 1;\n  const endField = () => {\n    fields.push(field);\n    field = '';\n    fieldStart = true;\n  };\n  const endRecord = () => {\n    endField();\n    if (fields.length > 1 || fields[0].trim() !== '') records.push({ line: startLine, fields });\n    fields = [];\n    startLine = line + 1;\n  };\n  for (let i = 0; i < source.length; i++) {\n    const char = source[i];\n    if (quoted) {\n      if (char === '\"' && source[i + 1] === '\"') {\n        field += '\"';\n        i++;\n      } else if (char === '\"') quoted = false;\n      else {\n        if (char === '\\n') line++;\n        field += char;\n      }\n    } else if (char === '\"' && fieldStart) {\n      quoted = true;\n      fieldStart = false;\n    } else if (char === separator) endField();\n    else if (char === '\\n') {\n      endRecord();\n      line++;\n    } else {\n      field += char;\n      fieldStart = false;\n    }\n  }\n  const openQuote = quoted;\n  if (field !== '' || fields.length > 0 || openQuote) endRecord();\n  return { records, openQuote };\n}\n\n// --- find the separator ------------------------------------------------------\n// The first record decides how many columns there are; the separator that\n// gives the most records with that many columns wins. One column never counts.\nconst NAMES = { ',': 'comma', ';': 'semicolon', '\\t': 'tab', '|': 'pipe' };\nlet body = text;\nlet candidates = Object.keys(NAMES);\nconst hint = /^sep=(.)\\n/i.exec(text); // a first line \"sep=;\" as Excel writes it\nif (hint) {\n  body = text.slice(hint[0].length);\n  candidates = [hint[1]];\n}\nlet best = null;\nfor (const separator of candidates) {\n  const parsed = split(body, separator);\n  const columns = parsed.records[0]?.fields.length ?? 0;\n  if (columns < 2) continue;\n  const score = parsed.records.filter((record) => record.fields.length === columns).length * columns;\n  if (!best || score > best.score) best = { separator, columns, score, ...parsed };\n}\nconst firstLine = body.split('\\n')[0].slice(0, 120);\nif (!best) {\n  return refuse(\n    422,\n    'one_column',\n    'The file has only one column per line, so nothing was stored. I looked for a comma, semicolon, tab or | between the values and found none in the first line. Check what the export writes between values.',\n    { file_hash, first_line: firstLine },\n  );\n}\nif (best.openQuote) {\n  return refuse(\n    422,\n    'cut_off',\n    'The file ends inside a quoted field, so it looks cut off. Nothing was stored. Send it again when the export is complete.',\n    { file_hash, delimiter: NAMES[best.separator] },\n  );\n}\n\n// --- which column is what ----------------------------------------------------\nconst fieldOf = (heading) => {\n  const name = heading.toLowerCase().replace(/[^a-z0-9%°]/g, '');\n  if (name === '') return null;\n  if (/temp|°/.test(name)) return 'temperature';\n  if (/drop|frame|jank|stutter/.test(name)) return 'frame_drops';\n  if (/batt|charge|^bat%?$/.test(name)) return 'battery';\n  if (/note|comment|remark|descr|what/.test(name)) return 'note';\n  if (/session|^run$/.test(name)) return 'session';\n  if (/device|phone|model/.test(name)) return 'device';\n  if (/^(id|logid|entryid|rowid|uid|uuid)$/.test(name)) return 'entry_id';\n  if (/^date$|^day$/.test(name)) return 'date';\n  if (/time|when|logged|date/.test(name)) return 'time';\n  return null;\n};\nconst looksLikeNumber = (value) => /^[-+]?\\d+([.,]\\d+)?\\s*(%|°?c)?$/i.test(value.trim());\n\nconst first = best.records[0].fields;\nconst guessed = first.map(fieldOf);\nconst header = guessed.some(Boolean) && !first.some(looksLikeNumber);\nlet columns;\nlet records;\nif (header) {\n  columns = guessed;\n  records = best.records.slice(1);\n} else {\n  columns = settings.columns_without_header[String(first.length)];\n  records = best.records;\n  if (!columns) {\n    return refuse(\n      422,\n      'no_header',\n      `The file has no header row and ${first.length} columns. Without a header I can read ${Object.keys(settings.columns_without_header).join(', ')} columns (see Settings), or add a header row: time, device, battery, temperature, frame drops, note.`,\n      { file_hash, delimiter: NAMES[best.separator], first_line: firstLine },\n    );\n  }\n}\nconst at = (field) => columns.indexOf(field);\nconst missing = ['battery', 'temperature', 'frame_drops', 'note'].filter((field) => at(field) < 0);\nif (missing.length > 0) {\n  return refuse(422, 'missing_columns', `I cannot find a column for: ${missing.join(', ')}. The header I read is: ${first.join(' | ')}.`, {\n    file_hash,\n    delimiter: NAMES[best.separator],\n    missing,\n  });\n}\nif (at('device') < 0 && upload.device === '') {\n  return refuse(\n    422,\n    'no_device',\n    'I do not know which phone this log is from. Add ?device=NAME to the address the shortcut posts to, or a device column to the file.',\n    { file_hash, delimiter: NAMES[best.separator] },\n  );\n}\nif (records.length > settings.max_rows) {\n  return refuse(413, 'too_many_rows', `The file has ${records.length} rows; the limit is ${settings.max_rows} (MAX_ROWS in Settings).`, { file_hash });\n}\n\n// --- read the values ---------------------------------------------------------\n// \"85%\", \"38,5\", \"38.5 °C\" -> number. null when it is not a number.\nconst number = (value) => {\n  const cleaned = value\n    .trim()\n    .replace(/\\s*(%|°\\s*c|°|c)$/i, '')\n    .replace(',', '.');\n  return /^[-+]?\\d+(\\.\\d+)?$/.test(cleaned) ? Number(cleaned) : null;\n};\n\n// A time as written on the phone -> \"2026-10-28T14:05:00\", without a time zone:\n// the comparison only needs the distance between two readings of one phone.\nconst two = (n) => String(n).padStart(2, '0');\nfunction time(value) {\n  const raw = value.trim();\n  if (raw === '') return '';\n  let parts = null;\n  let m;\n  if (/^\\d{10}$|^\\d{13}$/.test(raw)) {\n    const date = new Date(Number(raw) * (raw.length === 10 ? 1000 : 1));\n    parts = [date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate(), date.getUTCHours(), date.getUTCMinutes(), date.getUTCSeconds()];\n  } else if ((m = /^(\\d{4})[-/.](\\d{1,2})[-/.](\\d{1,2})(?:[T ,]+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?(?:\\.\\d+)?\\s*(am|pm)?)?\\s*(?:z|[+-]\\d{2}:?\\d{2})?$/i.exec(raw))) {\n    parts = [m[1], m[2], m[3], m[4] ?? 0, m[5] ?? 0, m[6] ?? 0, m[7]];\n  } else if ((m = /^(\\d{1,2})[-/.](\\d{1,2})[-/.](\\d{2}|\\d{4})(?:[T ,]+(\\d{1,2}):(\\d{2})(?::(\\d{2}))?\\s*(am|pm)?)?$/i.exec(raw))) {\n    const year = m[3].length === 2 ? `20${m[3]}` : m[3];\n    parts = settings.day_first ? [year, m[2], m[1]] : [year, m[1], m[2]];\n    parts.push(m[4] ?? 0, m[5] ?? 0, m[6] ?? 0, m[7]);\n  }\n  if (!parts) return null;\n  let [year, month, day, hour, minute, second] = parts.slice(0, 6).map(Number);\n  const half = String(parts[6] ?? '').toLowerCase();\n  if (half === 'pm' && hour < 12) hour += 12;\n  if (half === 'am' && hour === 12) hour = 0;\n  const check = new Date(Date.UTC(year, month - 1, day, hour, minute, second));\n  const real = check.getUTCFullYear() === year && check.getUTCMonth() === month - 1 && check.getUTCDate() === day && hour < 24 && minute < 60 && second < 60;\n  return real ? `${year}-${two(month)}-${two(day)}T${two(hour)}:${two(minute)}:${two(second)}` : null;\n}\n\nconst rows = [];\nconst rejected = [];\nconst seen = new Map();\nlet repeated = 0;\nconst cutOffHint = (record) => (record === records[records.length - 1] ? ' It is the last line: the file may be cut off, send it again when the export is complete.' : '');\n\nfor (const record of records) {\n  const reject = (reason) => rejected.push({ line: record.line, reason });\n  if (record.fields.length !== columns.length) {\n    reject(`has ${record.fields.length} of ${columns.length} columns.${cutOffHint(record)}`);\n    continue;\n  }\n  const cell = (field) => (at(field) < 0 ? '' : record.fields[at(field)].trim());\n\n  const device = cell('device') || upload.device;\n  if (device === '') {\n    reject('no device');\n    continue;\n  }\n  const battery = number(cell('battery'));\n  if (battery === null || battery < 0 || battery > 100) {\n    reject(`battery \"${cell('battery')}\" is not a number from 0 to 100`);\n    continue;\n  }\n  const temperature = number(cell('temperature'));\n  if (temperature === null || temperature < settings.temp_min || temperature > settings.temp_max) {\n    reject(`temperature \"${cell('temperature')}\" is not a number from ${settings.temp_min} to ${settings.temp_max}`);\n    continue;\n  }\n  const frame_drops = number(cell('frame_drops'));\n  if (frame_drops === null || frame_drops < 0 || !Number.isInteger(frame_drops)) {\n    reject(`frame drops \"${cell('frame_drops')}\" is not a whole number of 0 or more`);\n    continue;\n  }\n  const written = at('date') >= 0 ? `${cell('date')} ${cell('time')}`.trim() : cell('time');\n  const logged_at = time(written);\n  if (logged_at === null) {\n    reject(`time \"${written}\" is not a date and time I can read`);\n    continue;\n  }\n  const note = cell('note').replace(/\\r/g, '');\n  const session = cell('session');\n  const entry_id = cell('entry_id');\n\n  // What makes two rows \"the same reading\": the app's own id when there is one,\n  // else phone + time, else the whole row.\n  const identity = entry_id !== '' ? ['id', device, entry_id] : logged_at !== '' ? ['time', device, logged_at] : ['row', device, battery, temperature, frame_drops, note];\n  const row_key = sha256(identity.join('\\u001f')).slice(0, 32);\n  const content_hash = sha256([device, logged_at, battery, temperature, frame_drops, note, session].join('\\u001f')).slice(0, 16);\n\n  if (seen.has(row_key)) {\n    if (seen.get(row_key) === content_hash) repeated++;\n    else reject('same phone and time (or id) as an earlier line of this file, with different values. The earlier line was kept.');\n    continue;\n  }\n  seen.set(row_key, content_hash);\n  rows.push({ row_key, content_hash, line: record.line, device, logged_at, session, battery, temperature, frame_drops, note, entry_id });\n}\n\nif (rows.length === 0) {\n  return refuse(422, 'no_rows', records.length === 0 ? 'The file has a header but no rows.' : `None of the ${records.length} rows could be used. See \"rejected\" for the reason per line.`, {\n    file_hash,\n    delimiter: NAMES[best.separator],\n    rejected: rejected.slice(0, 20),\n    rejected_count: rejected.length,\n  });\n}\n\nreturn [\n  {\n    json: {\n      ok: true,\n      form: upload.form,\n      filename: upload.filename,\n      device: upload.device,\n      file_hash,\n      delimiter: NAMES[best.separator],\n      header,\n      rows_in_file: records.length,\n      repeated_in_file: repeated,\n      rows,\n      rejected,\n    },\n  },\n];"
+      },
+      "id": "d92ca71e-576b-448e-8652-4fe9ee16faf0",
+      "name": "Parse and check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "820d9db0-3b98-4ab0-8116-59a90ad30671",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "6422d321-eef1-479d-88f0-afdaac113dfd",
+      "name": "Understood?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "game_log_files"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "file_hash": "={{ $json.file_hash }}",
+            "token": "={{ $('Settings').first().json.token }}",
+            "status": "received",
+            "device": "={{ $json.device }}",
+            "filename": "={{ $json.filename }}",
+            "form": "={{ $json.form }}",
+            "rows_in_file": "={{ $json.rows_in_file }}",
+            "received_at": "={{ $now.toISO() }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "file_hash",
+              "displayName": "file_hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "token",
+              "displayName": "token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "device",
+              "displayName": "device",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "filename",
+              "displayName": "filename",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "form",
+              "displayName": "form",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rows_in_file",
+              "displayName": "rows_in_file",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "bbbfee6e-2b16-44cb-849d-c643dd6873dd",
+      "name": "Note the file",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1340,
+        -200
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "game_log_files"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "file_hash",
+              "condition": "eq",
+              "keyValue": "={{ $('Parse and check').first().json.file_hash }}"
+            },
+            {
+              "keyName": "device",
+              "condition": "eq",
+              "keyValue": "={{ $('Parse and check').first().json.device }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "7643894e-668c-475c-8c2c-6854d8919cf7",
+      "name": "Same file before",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1560,
+        -200
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Was exactly this file imported before? Only an import that finished counts:\n// a run that failed half way must not block the next try. Two copies arriving\n// at the same moment both get past this check; the row keys stop them later.\nconst token = $('Settings').first().json.token;\nconst earlier = $input\n  .all()\n  .map((item) => item.json)\n  .filter((row) => row.token !== token && row.status === 'done')\n  .sort((a, b) => a.id - b.id);\nreturn [{ json: { duplicate_file: earlier.length > 0, first_imported_at: earlier[0]?.received_at ?? null } }];"
+      },
+      "id": "05395869-918b-403f-8479-edd8e112397a",
+      "name": "Seen this file?",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1780,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f8679200-9bcf-4702-8016-271a8de9a7c8",
+              "leftValue": "={{ !$json.duplicate_file }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "1b7fd814-5fcb-4eb2-86c8-8b4826205727",
+      "name": "New file?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2000,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "game_log_files"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "token",
+              "condition": "eq",
+              "keyValue": "={{ $('Settings').first().json.token }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "duplicate",
+            "rows_added": 0
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rows_added",
+              "displayName": "rows_added",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "6d8ba53f-2362-4b88-8273-cb79002b4b8d",
+      "name": "File was a duplicate",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2220,
+        0
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per row of the file, each marked with this run's token.\nconst { token } = $('Settings').first().json;\nconst file = $('Parse and check').first().json;\nreturn file.rows.map((row) => ({ json: { ...row, token, file_hash: file.file_hash } }));"
+      },
+      "id": "b5485f40-9e29-4710-8d1a-345fe3e2cf9d",
+      "name": "Rows of the file",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2220,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "game_log_rows"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "row_key": "={{ $json.row_key }}",
+            "content_hash": "={{ $json.content_hash }}",
+            "token": "={{ $json.token }}",
+            "file_hash": "={{ $json.file_hash }}",
+            "device": "={{ $json.device }}",
+            "logged_at": "={{ $json.logged_at }}",
+            "session": "={{ $json.session }}",
+            "battery": "={{ $json.battery }}",
+            "temperature": "={{ $json.temperature }}",
+            "frame_drops": "={{ $json.frame_drops }}",
+            "note": "={{ $json.note }}",
+            "entry_id": "={{ $json.entry_id }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "row_key",
+              "displayName": "row_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "content_hash",
+              "displayName": "content_hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "token",
+              "displayName": "token",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "file_hash",
+              "displayName": "file_hash",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "device",
+              "displayName": "device",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "logged_at",
+              "displayName": "logged_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "session",
+              "displayName": "session",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "battery",
+              "displayName": "battery",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "temperature",
+              "displayName": "temperature",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "frame_drops",
+              "displayName": "frame_drops",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "note",
+              "displayName": "note",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "entry_id",
+              "displayName": "entry_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "3b2033c9-a764-4324-8ab8-0bdcf6a5df70",
+      "name": "Claim rows",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2440,
+        -300
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "game_log_rows"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "row_key",
+              "condition": "eq",
+              "keyValue": "={{ $json.row_key }}"
+            }
+          ]
+        },
+        "returnAll": true
+      },
+      "id": "8e3eafc6-914b-4046-821f-de77b6b651f9",
+      "name": "Rows with the same key",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        2660,
+        -300
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// Every row of the file is in the table now, next to any row with the same key\n// that another run or an earlier import put there. The row with the lowest id\n// for a key is the one that stays: ids only go up and every run looks after its\n// own insert, so all runs agree on which one that is.\nconst { token } = $('Settings').first().json;\nconst first = new Map();\nfor (const { json: row } of $input.all()) {\n  if (row.row_key === undefined) continue;\n  const known = first.get(row.row_key);\n  if (!known || row.id < known.id) first.set(row.row_key, row);\n}\nconst added = [];\nconst remove = [];\nconst conflicts = [];\nfor (const { json: mine } of $('Claim rows').all()) {\n  const winner = first.get(mine.row_key) ?? mine;\n  if (winner.id === mine.id) {\n    added.push(mine);\n    continue;\n  }\n  remove.push(mine.id);\n  // Same reading, other values: the stored row stays, and the phone is told.\n  if (winner.content_hash !== mine.content_hash) {\n    conflicts.push({\n      device: mine.device,\n      logged_at: mine.logged_at,\n      entry_id: mine.entry_id,\n      stored: { battery: winner.battery, temperature: winner.temperature, frame_drops: winner.frame_drops, note: winner.note },\n      in_this_file: { battery: mine.battery, temperature: mine.temperature, frame_drops: mine.frame_drops, note: mine.note },\n    });\n  }\n}\nreturn [{ json: { token, added, remove, conflicts } }];"
+      },
+      "id": "b71dca02-f5df-4d0a-8527-1d94c132fddc",
+      "name": "Keep the first",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2880,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "89b7980f-73e6-4231-892f-603a4ad7f08c",
+              "leftValue": "={{ $json.remove.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "a50718c2-daad-4d53-8330-d805c93f7cb3",
+      "name": "Any duplicate rows?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3100,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per row of this run that lost to an earlier row with the same key.\nreturn $('Keep the first').first().json.remove.map((id) => ({ json: { id } }));"
+      },
+      "id": "144ccbb1-97ee-4a90-8216-93020eada9aa",
+      "name": "Duplicate rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3320,
+        -400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "game_log_rows"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.id }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d7655dc3-3d7a-41b9-8865-e08a41017244",
+      "name": "Remove duplicate rows",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        3540,
+        -400
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "abb4bcce-fb2a-4104-8971-b268163d74c9",
+              "leftValue": "={{ $('Keep the first').first().json.added.length > 0 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "134bd093-8115-4aed-880b-57baf1c80057",
+      "name": "Any new rows?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3760,
+        -300
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per new row, with the column names of the Log tab.\nreturn $('Keep the first')\n  .first()\n  .json.added.map((row) => ({\n    json: {\n      logged_at: row.logged_at,\n      device: row.device,\n      battery: row.battery,\n      temperature: row.temperature,\n      frame_drops: row.frame_drops,\n      note: row.note,\n      session: row.session,\n      row_key: row.row_key,\n    },\n  }));"
+      },
+      "id": "c151233f-8398-4a7f-886b-5a8bcb419015",
+      "name": "New rows for the sheet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3980,
+        -420
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Log"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "225d8f75-0a4b-4c3c-8f26-223bac345363",
+      "name": "Append to Log tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        4200,
+        -420
+      ],
+      "disabled": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "deleteRows",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "game_log_rows"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "token",
+              "condition": "eq",
+              "keyValue": "={{ $('Settings').first().json.token }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a499c5f4-17a7-4d29-8615-5f3a61027df2",
+      "name": "Take the rows back",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        4440,
+        -240
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "game_log_files"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "token",
+              "condition": "eq",
+              "keyValue": "={{ $('Settings').first().json.token }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "failed",
+            "rows_added": 0
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rows_added",
+              "displayName": "rows_added",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "3a683b64-320e-4bcc-8c55-8f037a70b02c",
+      "name": "File failed",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        4660,
+        -240
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "update",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "game_log_files"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "token",
+              "condition": "eq",
+              "keyValue": "={{ $('Settings').first().json.token }}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "status": "done",
+            "rows_added": "={{ $('Keep the first').first().json.added.length }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rows_added",
+              "displayName": "rows_added",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "751ed347-77a4-45ad-8093-d68211648a4e",
+      "name": "File done",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        4660,
+        -420
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "resource": "row",
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "name",
+          "value": "game_log_rows"
+        },
+        "matchType": "allConditions",
+        "filters": {},
+        "returnAll": true
+      },
+      "id": "0c581498-c783-413b-8545-3aab55e56f70",
+      "name": "All rows",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        4900,
+        0
+      ],
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// The per-phone comparison, from every stored row. It is worked out again on\n// each upload and on each GET, so it never drifts from the rows.\nconst { session_gap_minutes } = $('Settings').first().json;\nconst GAP_MS = session_gap_minutes * 60 * 1000;\n\n// A row that lost the \"first row per key\" check may still be in the table for\n// a moment while its run removes it. Count each key once.\nconst byKey = new Map();\nfor (const { json: row } of $input.all()) {\n  if (row.row_key === undefined) continue;\n  const known = byKey.get(row.row_key);\n  if (!known || row.id < known.id) byKey.set(row.row_key, row);\n}\n\nconst phones = new Map();\nfor (const row of byKey.values()) {\n  if (!phones.has(row.device)) phones.set(row.device, []);\n  phones.get(row.device).push({ ...row, at: row.logged_at ? Date.parse(`${row.logged_at}Z`) : null });\n}\n\nconst round = (value, digits = 2) => (value === null ? null : Math.round(value * 10 ** digits) / 10 ** digits);\nconst mean = (values) => (values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length);\n\nconst devices = [];\nfor (const [device, rows] of phones) {\n  // Oldest first; rows without a time keep the order they were stored in, at the end.\n  rows.sort((a, b) => (a.at === null) - (b.at === null) || (a.at ?? 0) - (b.at ?? 0) || a.id - b.id);\n\n  // Sessions: the \"session\" column when the file has one; else a pause longer\n  // than SESSION_GAP_MINUTES starts a new one. A row with neither a session\n  // name nor a time belongs to no session.\n  const sessions = new Map();\n  let counter = 0;\n  let last = null;\n  for (const row of rows) {\n    let name = null;\n    if (row.session) name = `named:${row.session}`;\n    else if (row.at !== null) {\n      if (last === null || row.at - last > GAP_MS) counter++;\n      last = row.at;\n      name = `gap:${counter}`;\n    }\n    if (name === null) continue;\n    if (!sessions.has(name)) sessions.set(name, []);\n    sessions.get(name).push(row);\n  }\n\n  const drains = [];\n  let hours = 0;\n  let dropsInTimedSessions = 0;\n  for (const session of sessions.values()) {\n    if (session.length < 2) continue;\n    drains.push(session[0].battery - session[session.length - 1].battery);\n    const timed = session.filter((row) => row.at !== null);\n    const length = timed.length < 2 ? 0 : (timed[timed.length - 1].at - timed[0].at) / 3600000;\n    if (length > 0) {\n      hours += length;\n      dropsInTimedSessions += timed.reduce((sum, row) => sum + row.frame_drops, 0);\n    }\n  }\n\n  const temperatures = rows.map((row) => row.temperature);\n  const times = rows.filter((row) => row.at !== null).map((row) => row.logged_at);\n  devices.push({\n    device,\n    readings: rows.length,\n    sessions: sessions.size,\n    avg_temperature: round(mean(temperatures)),\n    max_temperature: Math.max(...temperatures),\n    avg_battery_drain_per_session: round(mean(drains)), // first reading minus last reading of a session, in battery percent\n    frame_drops_total: rows.reduce((sum, row) => sum + row.frame_drops, 0),\n    frame_drops_per_hour: hours > 0 ? round(dropsInTimedSessions / hours) : null,\n    hours_logged: round(hours),\n    first_reading: times[0] ?? null,\n    last_reading: times[times.length - 1] ?? null,\n  });\n}\ndevices.sort((a, b) => a.device.localeCompare(b.device));\n\nconst show = (value, unit) => (value === null ? 'n/a' : `${value}${unit}`);\nconst summary = devices\n  .map(\n    (d) =>\n      `${d.device}: ${d.readings} readings, avg ${show(d.avg_temperature, ' °C')}, max ${show(d.max_temperature, ' °C')}, drain ${show(d.avg_battery_drain_per_session, ' % per session')}, ${show(d.frame_drops_per_hour, ' frame drops per hour')}`,\n  )\n  .join('\\n');\n\nreturn [{ json: { rows_stored: byKey.size, devices, summary } }];"
+      },
+      "id": "f1586fab-14c7-4d36-8128-f5b088cb952e",
+      "name": "Compare devices",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "3d4ebd17-2962-4d4f-836b-f47419cfbcc3",
+              "leftValue": "={{ $('Phone posts CSV').isExecuted }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "looseTypeValidation": true
+        }
+      },
+      "id": "1d097ea2-7c30-4c1d-8298-5c555dcc1276",
+      "name": "After an upload?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5340,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// One item per phone, with the column names of the Comparison tab.\nreturn $('Compare devices')\n  .first()\n  .json.devices.map((device) => ({ json: device }));"
+      },
+      "id": "39afca60-9655-4ed1-84bc-e7fd9dca75ee",
+      "name": "Comparison rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5560,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Comparison"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "device"
+          ],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "28fe6995-5bd5-49a3-8c4e-2469024d0aa5",
+      "name": "Update Comparison tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        5780,
+        -100
+      ],
+      "disabled": true,
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// The one answer the caller gets: an HTTP code and a JSON body.\nconst ran = (name) => $(name).isExecuted;\nconst out = (code, body) => [{ json: { code, body } }];\n\n// GET: only the comparison.\nif (!ran('Phone posts CSV')) {\n  const comparison = $('Compare devices').first().json;\n  return out(200, { ok: true, rows_stored: comparison.rows_stored, comparison: comparison.devices, summary: comparison.summary });\n}\n\nconst file = $('Parse and check').first().json;\nif (!file.ok) {\n  const { code, ok, ...rest } = file;\n  return out(code, { ok: false, ...rest });\n}\n\nconst about = { file_hash: file.file_hash, form: file.form, delimiter: file.delimiter, header: file.header, rows_in_file: file.rows_in_file };\n\nif (ran('Take the rows back')) {\n  return out(502, {\n    ok: false,\n    error: 'sheet_append_failed',\n    message: 'The rows could not be added to the Google Sheet, so they were taken out of the data table again. Nothing is half stored. Send the file again.',\n    ...about,\n  });\n}\n\nconst comparison = $('Compare devices').first().json;\nconst duplicate = $('Seen this file?').first().json.duplicate_file;\nconst kept = duplicate ? { added: [], conflicts: [] } : $('Keep the first').first().json;\nconst usable = file.rows.length;\nreturn out(200, {\n  ok: true,\n  ...about,\n  duplicate_file: duplicate, // true: exactly this file was imported before, nothing was looked at again\n  added: kept.added.length,\n  already_stored: usable - kept.added.length,\n  conflicts: kept.conflicts.slice(0, 20), // same reading as a stored row but other values: the stored row was kept\n  conflict_count: kept.conflicts.length,\n  rejected: file.rejected.slice(0, 20), // lines that were not stored, with the reason\n  rejected_count: file.rejected.length,\n  rows_stored: comparison.rows_stored,\n  comparison: comparison.devices,\n  summary: comparison.summary,\n});"
+      },
+      "id": "78f49355-10ea-4794-87d1-b799d4d83d71",
+      "name": "Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6020,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.code }}"
+        }
+      },
+      "id": "bf76cf40-48f7-4155-8b43-c3637b99c2f6",
+      "name": "Answer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        6240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Why insert first, then look\nData tables have no unique column. \"Look whether the row exists, then insert\" lets two runs that start together both insert. So each run inserts first and then reads the rows for its keys: the lowest id per key stays, and a run removes its own row when another one was first. Every run sees the same order, so they agree.\n\nWhat counts as the same reading: the `id` column of the file when it has one; else phone + time; else the whole row. A reading that is already stored with other values is not overwritten. It is listed under `conflicts` in the answer.",
+        "width": 640,
+        "height": 230,
+        "color": 5
+      },
+      "id": "85bae399-cfdb-426a-8a5b-57d6cd0e74ee",
+      "name": "Duplicates note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2400,
+        -100
+      ]
+    },
+    {
+      "parameters": {
+        "content": "### Google Sheet: set up, then switch on\n1. In your spreadsheet make a tab **Log** with this header row: `logged_at`, `device`, `battery`, `temperature`, `frame_drops`, `note`, `session`, `row_key`. Make a tab **Comparison** with: `device`, `readings`, `sessions`, `avg_temperature`, `max_temperature`, `avg_battery_drain_per_session`, `frame_drops_total`, `frame_drops_per_hour`, `hours_logged`, `first_reading`, `last_reading`.\n2. Open **Append to Log tab** and **Update Comparison tab**: pick your Google credential and the spreadsheet.\n3. Switch both nodes on (select the node, press **D**), save and publish. Until then they pass the rows through and nothing goes to Google.\n\nIf the append fails, the rows of this run are taken out of the data table again and the phone gets a 502, so sending the file again adds them. Only new rows reach the sheet.\n\n**Do not put a Google Sheets Trigger on the Log or Comparison tab.** This workflow writes to both, and every write would fire that trigger again. If another workflow should react to new rows, let it watch a different tab, or call it from here after **File done**.",
+        "width": 460,
+        "height": 470,
+        "color": 5
+      },
+      "id": "91c813ca-c360-47a5-8d96-b1b6738393af",
+      "name": "Sheets note",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3940,
+        -160
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Phone posts CSV": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask for comparison": {
+      "main": [
+        [
+          {
+            "node": "Settings",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Settings": {
+      "main": [
+        [
+          {
+            "node": "An upload?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "An upload?": {
+      "main": [
+        [
+          {
+            "node": "Read the upload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "All rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read the upload": {
+      "main": [
+        [
+          {
+            "node": "Parse and check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse and check": {
+      "main": [
+        [
+          {
+            "node": "Understood?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Understood?": {
+      "main": [
+        [
+          {
+            "node": "Note the file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Note the file": {
+      "main": [
+        [
+          {
+            "node": "Same file before",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Same file before": {
+      "main": [
+        [
+          {
+            "node": "Seen this file?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Seen this file?": {
+      "main": [
+        [
+          {
+            "node": "New file?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New file?": {
+      "main": [
+        [
+          {
+            "node": "Rows of the file",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "File was a duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File was a duplicate": {
+      "main": [
+        [
+          {
+            "node": "All rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rows of the file": {
+      "main": [
+        [
+          {
+            "node": "Claim rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claim rows": {
+      "main": [
+        [
+          {
+            "node": "Rows with the same key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rows with the same key": {
+      "main": [
+        [
+          {
+            "node": "Keep the first",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep the first": {
+      "main": [
+        [
+          {
+            "node": "Any duplicate rows?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any duplicate rows?": {
+      "main": [
+        [
+          {
+            "node": "Duplicate rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Any new rows?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate rows": {
+      "main": [
+        [
+          {
+            "node": "Remove duplicate rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove duplicate rows": {
+      "main": [
+        [
+          {
+            "node": "Any new rows?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any new rows?": {
+      "main": [
+        [
+          {
+            "node": "New rows for the sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "File done",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "New rows for the sheet": {
+      "main": [
+        [
+          {
+            "node": "Append to Log tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append to Log tab": {
+      "main": [
+        [
+          {
+            "node": "File done",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Take the rows back",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Take the rows back": {
+      "main": [
+        [
+          {
+            "node": "File failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File failed": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File done": {
+      "main": [
+        [
+          {
+            "node": "All rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "All rows": {
+      "main": [
+        [
+          {
+            "node": "Compare devices",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compare devices": {
+      "main": [
+        [
+          {
+            "node": "After an upload?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After an upload?": {
+      "main": [
+        [
+          {
+            "node": "Comparison rows",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Comparison rows": {
+      "main": [
+        [
+          {
+            "node": "Update Comparison tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Comparison tab": {
+      "main": [
+        [
+          {
+            "node": "Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result": {
+      "main": [
+        [
+          {
+            "node": "Answer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "id": "phoneCsvIntake01"
+}

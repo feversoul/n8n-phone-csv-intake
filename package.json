@@ -1,0 +1,14 @@
+{
+  "name": "n8n-phone-csv-intake",
+  "version": "1.0.0",
+  "private": true,
+  "description": "n8n webhook that takes a CSV log pushed from a phone shortcut, stores each reading once and returns a per-device comparison. Tested on real n8n",
+  "license": "MIT",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test:e2e": "node scripts/e2e.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

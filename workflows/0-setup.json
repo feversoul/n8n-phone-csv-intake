@@ -3,9 +3,9 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## Phone CSV Intake · Setup\nRun this once: press **Execute workflow**. It creates two data tables: `game_log_rows` (one row per reading) and `game_log_files` (one row per upload). Running it again changes nothing.\n\nThe webhook does the same for scripted installs. You can delete it.",
+        "content": "## Phone CSV Intake · Setup\nRun this once: press **Execute workflow**. It creates two data tables: `game_log_rows` (one row per reading) and `game_log_files` (one row per upload). Running it again changes nothing.\n\nThe webhook does the same for scripted installs. If you delete it, delete **Answer** too: that node only answers the webhook, and without the webhook a run ends on it with \"No Webhook node found\".",
         "width": 560,
-        "height": 200,
+        "height": 260,
         "color": 4
       },
       "id": "7ce98f09-560f-46db-89d3-8fc64579766a",
@@ -14,7 +14,7 @@
       "typeVersion": 1,
       "position": [
         -40,
-        -260
+        -320
       ]
     },
     {

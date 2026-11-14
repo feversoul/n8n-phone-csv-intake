@@ -1,5 +1,5 @@
-// SHA-256 written out in plain JavaScript, because the Code node has no
-// `crypto` and no `require`. Takes a string, hashes its UTF-8 bytes, returns
+// SHA-256 written out in plain JavaScript, because a self-hosted n8n does
+// not let the Code node load `crypto` by default (n8n Cloud does). Takes a string, hashes its UTF-8 bytes, returns
 // 64 hex characters: the same value `sha256sum` prints for that text.
 const K = [];
 for (let n = 2, found = 0; found < 64; n++) {

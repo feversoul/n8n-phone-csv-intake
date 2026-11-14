@@ -365,9 +365,11 @@ test('a file read before the export was finished (cut off)', async () => {
   assert.equal(phone(whole, third).readings, 3);
 });
 
-test('an upload that breaks off on the way never starts the workflow', async () => {
-  // The phone loses its connection after half of the body. The request says how
-  // long the body is, so n8n never sees a complete request.
+test('an upload that breaks off on the way stores nothing', async () => {
+  // The phone loses its connection after half of the body. Checked by hand in
+  // the executions list: the cut JSON upload started no run, the cut raw
+  // (text/csv) upload did start one, which stored nothing. This test only
+  // asserts what matters to the data: no row and no file record.
   const device = 'Dropped Phone';
   const text = csv(session(8, 6));
   const { hostname, port } = new URL(N8N);

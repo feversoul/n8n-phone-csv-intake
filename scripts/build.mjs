@@ -156,11 +156,11 @@ const setup = workflow(IDS.setup, 'Phone CSV Intake · 0 Setup', (w) => {
       '## Phone CSV Intake · Setup',
       `Run this once: press **Execute workflow**. It creates two data tables: \`${ROWS}\` (one row per reading) and \`${FILES}\` (one row per upload). Running it again changes nothing.`,
       '',
-      'The webhook does the same for scripted installs. You can delete it.',
+      'The webhook does the same for scripted installs. If you delete it, delete **Answer** too: that node only answers the webhook, and without the webhook a run ends on it with "No Webhook node found".',
     ],
-    [-40, -260],
+    [-40, -320],
     560,
-    200,
+    260,
   );
   w.node('Run once', 'manualTrigger', 1, [0, 0], {});
   w.hook('Or call', 'POST', 'setup', [0, 180]);
